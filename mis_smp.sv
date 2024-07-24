@@ -11,14 +11,12 @@ module mis_smp(input logic clk, reset,
 	);
     //all declerations of dmem pins
 
-	logic [1:0] tagbit;
-	logic [1:0][1:0] cache_bus_reply;
-	logic [3:0][1:0] cache_ask_mem_address, cache_address_out_mem_cpu, cache_address_out_mem_bus;
-	logic [1:0] cache_bus_reply_data_found;
-	logic [31:0][1:0] cache_bus_reply_data_delivery, cache_data_out_cpu, cache_data_out_mem_cpu, cache_data_out_mem_bus;//connections for Caches outputs
-	logic [1:0] cache_write_back_cpu, cache_write_back_bus;
+	logic [1:0][1:0] mmtag;
+	logic [1:0][1:0] answer_i, ask;
+	logic [3:0][1:0] Addr_rq;
+	logic [1:0] bus_response_valid, bus_data_valid, mmvalid, mem_rden, mem_wren;
     
-    logic [31:0][1:0] mem_readed;
+    logic [31:0][1:0] data_o, mmdata;
 
     
     riscv core1(clk, reset, PCF[0], InstrF[0], MemReadM[0], MemWriteM[0], PCstall[0], DataAdrM[0], WriteDataM[0], ReadDataM[0], dec[0]);
@@ -28,74 +26,68 @@ module mis_smp(input logic clk, reset,
     imem imem2(PCF[1], InstrF[1]);
 
     dmem dmem1(
-                .clk(clk),
-                .read(MemReadM[0]), 
-                .write(MemWriteM[0]), 
-                .write_data(WriteDataM[0]), 
-                .mem_address(DataAdrM[0]), 
+                clk,
+                MemReadM[0], 
+                MemWriteM[0],
+                WriteDataM[0],
+                DataAdrM[0],
 
-                .bus_requests(cache_bus_reply[1]),
-                .bus_request_mem_address(cache_ask_mem_address[1]),
+                answer_i[1],
+                ask[0],
+                bus_response_valid[1],
 
-                .bus_data_found(cache_bus_reply_data_found[1]),
-                .bus_data_delivery(cache_bus_reply_data_delivery[1]),
+                data_o[1],
+                DataAdrM[1],
+                bus_data_valid[0],
 
-                .mem_data_delivery(mem_readed[0]),
-                .tag_bit(tagbit[0]),
+                mmvalid[0],
+                mmdata[0],
+                mmtag[0],
+                mem_rden[0],
+                mem_wren[0],
 
-                .data_out_cpu(ReadDataM[0]),
-
-                .cpu_write_back(cache_write_back_cpu[0]),//<-outputs:
-                .bus_write_back(cache_write_back_bus[0]),
-                .address_out_mem_cpu(cache_address_out_mem_cpu[0]),
-                .address_out_mem_bus(cache_address_out_mem_bus[0]),
-                .data_out_mem_cpu(cache_data_out_mem_cpu[0]),
-                .data_out_mem_bus(cache_data_out_mem_bus[0]),
-                .bus_reply_abort_mem_access(cache_bus_reply_data_found[0]),
-                .bus_reply_data_found(cache_bus_reply_data_delivery[0]),
-
-                .ask_mem_address(cache_ask_mem_address[0]),
-                .bus_reply(cache_bus_reply[0])
+                Addr_rq[0],
+                data_o[0],
             );
-    
+  
     dmem dmem2(
-                .clk(clk),
-                .read(MemReadM[1]), 
-                .write(MemWriteM[1]), 
-                .write_data(WriteDataM[1]), 
-                .mem_address(DataAdrM[1]), 
+                clk,
+                MemReadM[1], 
+                MemWriteM[1],
+                WriteDataM[1],
+                DataAdrM[1],
 
-                .bus_requests(cache_bus_reply[0]),
-                .bus_request_mem_address(cache_ask_mem_address[0]),
+                answer_i[0],
+                ask[1],
+                bus_response_valid[0],
 
-                .bus_data_found(cache_bus_reply_data_found[0]),
-                .bus_data_delivery(cache_bus_reply_data_delivery[0]),
+                data_o[0],
+                DataAdrM[0],
+                bus_data_valid[1],
 
-                .mem_data_delivery(mem_readed[1]),
-                .tag_bit(tagbit[1]),
+                mmvalid[1],
+                mmdata[1],
+                mmtag[1],
+                mem_rden[1],
+                mem_wren[1],
 
-                .data_out_cpu(ReadDataM[1]),
-
-                .cpu_write_back(cache_write_back_cpu[1]),//<-outputs:
-                .bus_write_back(cache_write_back_bus[1]),
-                .address_out_mem_cpu(cache_address_out_mem_cpu[1]),
-                .address_out_mem_bus(cache_address_out_mem_bus[1]),
-                .data_out_mem_cpu(cache_data_out_mem_cpu[1]),
-                .data_out_mem_bus(cache_data_out_mem_bus[1]),
-                .bus_reply_abort_mem_access(cache_bus_reply_data_found[1]),
-                .bus_reply_data_found(cache_bus_reply_data_delivery[1]),
-
-                .ask_mem_address(cache_ask_mem_address[1]),
-                .bus_reply(cache_bus_reply[1])
+                Addr_rq[1],
+                data_o[1],
             );
-
     mmemory ram_(
-    .clk(clk),
-	.address_read1(cache_ask_mem_address[0]), .address_read2(cache_ask_mem_address[1]),
-    .write1(cache_write_back_cpu[0]), .write2(cache_write_back_bus[0]), .write3(cache_write_back_cpu[1]), .write4(cache_write_back_bus[1]),
-    .address_write1(cache_address_out_mem_cpu[0]), .address_write2(cache_address_out_mem_bus[0]), .address_write3(cache_address_out_mem_cpu[1]), .address_write4(cache_address_out_mem_bus[1]),
-    .data_write1(cache_data_out_mem_cpu[0]), .data_write2(cache_data_out_mem_bus[0]), .data_write3(cache_data_out_mem_cpu[1]), .data_write4(cache_data_out_mem_bus[1]),
-    .tag_bit1(tagbit[0]), .tag_bit2(tagbit[1]),
-    .readed1(mem_readed[0]), .readed2(mem_readed[1]));
+        clk,
+        Addr_rq[0], Addr_rq[1],
+        mem_rden[0],
+        mem_rden[1],
+        mem_wren[0],
+        mem_wren[1],
+        data_o[0],
+        data_o[1],
+
+        mmtag[0],
+        mmtag[1],
+        mmdata[0],
+        mmdata[1]
+    );
 
 endmodule
