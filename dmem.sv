@@ -1,130 +1,218 @@
 module dmem(
-	input logic clk,
-	//from cpu
-	input logic read, write, 
-	input logic [31:0] write_data,
-	input logic [3:0] mem_address,
+    // CPU
+    input logic clk,
+    input logic WrM, RdM, 
+    input logic [31:0] WriteDataM,
+    input logic [3:0] AdrM_i,
 	
-	input logic [1:0] bus_requests,//from other caches: bus_invalidate=2'b00, bus_write_miss=2'b01, bus_read_miss=2'b10;
-	input logic [3:0] bus_request_mem_address,//the position they reffer	
-	
-	input logic bus_data_found,//if the other cache says abort mem access 
-	input logic [31:0] bus_data_delivery,//if we ever need a data that's in other cache, there it is
-	
-	input logic [31:0] mem_data_delivery,
-    input logic [1:0] tag_bit,
-	
-	output logic [31:0] data_out_cpu,//reading going to cpu 
+	output logic cpu_stall,
 
-	output logic cpu_write_back, bus_write_back,//promote upper in the hierarchy, main mem is watching this
-	output logic [3:0] address_out_mem_cpu,address_out_mem_bus,
-	output logic [31:0] data_out_mem_cpu,data_out_mem_bus,//unique data goes to ram
+    // Bus
+    input logic [1:0] bus_message_i, 
+    output logic [1:0] bus_message_o,
 
-	output logic bus_reply_abort_mem_access,//announces to the other core we have the data needed
-	output logic [31:0] bus_reply_data_found,//attends bus_request
-	
-	output logic [3:0] ask_mem_address,//what they need to find
-	output logic [1:0] bus_reply//write on bus for another core that's snooping it
+	input logic seen_i,
+	output logic seen_o,
+
+    input logic bus_response_valid, // if the other cache says abort mem access 
+    input logic [31:0] bus_data_i,
+    input logic [3:0] bus_addr_i, // snoop communicate address 
+    output logic bus_data_valid, // announces to the other core we have the data needed
+
+    // Main memory
+    input logic mmvalid,
+    input logic [31:0] mmdata,
+    input logic [1:0] mmtag,
+
+    output logic mem_rden, mem_wren, 
+
+    // Address - data output
+    output logic [3:0] Addr_rq,
+    output logic [31:0] data_o,
+
+	//tb
+	output logic [1:0] status, tag
 	);
 
-    // Cache Line Configuration Scheme:
-    // |coherency state ~2bits|tag ~2bits|data ~32bits|
+
+    
+    // mesis parameters
+    parameter I = 2'b00, M = 2'b01, S = 2'b10, E = 2'b11;
+
+    // Bus parameters
+    parameter NA = 2'b00, bus_invalidate = 2'b01, bus_write_miss = 2'b10, bus_read_miss = 2'b11;
+
+    // Request parameters
+    parameter write_hit = 2'b00, read_hit = 2'b01, write_miss = 2'b10, read_miss = 2'b11; 
+
+	// Cache Line Configuration Scheme:
+    // |coherency mesi ~2bits|tag ~2bits|data ~32bits|
     //  35                  34 33      32 31         0
-	integer i;//inicialization
-	integer j,k;//loops
+    logic [35:0] cache [3:0];
+
+	initial begin
+		cache[0] = {E, 2'b00, 32'h000d};
+		cache[1] = {M, 2'b01, 32'h000a};
+		cache[2] = {S, 2'b10, 32'h000d};
+		cache[3] = {I, 2'b11, 32'h000a};
+	end
+
+    // Address register
+    logic [3:0] AdrM;
+    // Proc request address
+    logic [1:0] index_proc, tag_proc;
+	// Snoop request address
+	logic [1:0] index_snoop, tag_snoop;
+	// tag register
+	logic [1:0] tag_reg; 
+	// Proc operations
+    logic [2:0] read_write;
+    // Action & snoop signals
+    logic [1:0] Updated_MESI_state_proc, Updated_MESI_state_snoop, Current_MESI_state_proc, Current_MESI_state_snoop, message_i;
+    logic hit_proc, hit_snoop, active;
+    logic mem_rden_proc, mem_wren_snoop;
+    logic bus_response_valid_q, shared, prior;
+    // CPU request signals
+    logic we_n, we_q;
+    logic [1:0] wrAdr_q;
+    logic [31:0] wd_q;
+
+
+
+	assign active = RdM || WrM;
+	assign cpu_stall = read_write == read_miss;
+
+    // Decomposing the CPU address input into index and tag
+    assign tag_reg = cache[index_proc][33:32]; 
+
+	assign status = cache[AdrM[1:0]][35:34];
+	assign tag 	  = cache[AdrM[1:0]][33:32];
 	
-	//States parameters, for status_q and state_out, simplificam a vida:
-	parameter I=2'b00, M=2'b01, S=2'b10;
-	//Bus parameters, to go out for bus:
-	parameter bus_invalidate=2'b00, bus_write_miss=2'b01, bus_read_miss=2'b10;
+	always_comb begin
+		//default
+		read_write = 3'b111;
+		bus_message_o = NA;
+		{tag_proc, index_proc} = 4'b0;
+		hit_proc = 1'b0;
+		Current_MESI_state_proc = cache[index_proc][35:34];
+		if ( active ) begin 
+			prior = 1'b1;
+			{tag_proc, index_proc} = AdrM;
+			hit_proc = (cache[index_proc][35:34] != I) && (tag_proc == tag_reg);
+			if (hit_proc) begin 
+				if (WrM) begin
+					read_write = {1'b0, write_hit};
+					if (Current_MESI_state_proc == S) 
+						bus_message_o = bus_invalidate;
+				end else if (RdM) 
+					read_write = {1'b0, read_hit};
+			end else begin
+				Current_MESI_state_proc = I;
+				if (WrM) begin
+					bus_message_o = bus_write_miss;
+					read_write = {1'b0, write_miss};
+				end else if (RdM) begin
+					bus_message_o = bus_read_miss;
+					if (seen_i) begin
+						read_write = { shared || bus_response_valid ,read_miss};
+						if ( shared ) bus_message_o = NA;
+					end
+				end
+			end
+		end else begin 
+			prior = 1'b0;
+			if (seen_i) bus_message_o = NA;
+		end
+	end
 	
-	logic [35:0] cache [3:0];//estrutura de dados da cache que armazenara o que a fsm r e b retorna
-	
-	logic [1:0] cache_index;
-	assign cache_index = mem_address[1:0];//decomposing the cpu address input into index and tag
-	logic [1:0] tag;
-	assign tag = mem_address[3:2];
 
-	logic [1:0] cache_tag_attending_bus;
-	assign cache_tag_attending_bus = bus_request_mem_address[3:2];//decomposing the bus address input into index and tag
-	logic [1:0] cache_index_attending_bus;
-	assign cache_index_attending_bus = bus_request_mem_address[1:0];
-	logic [1:0] coherency_state_attending_bus;
-	assign coherency_state_attending_bus = cache[cache_index_attending_bus][35:34];
+	always_comb begin
+		{tag_snoop, index_snoop} = 4'b0;
+		hit_snoop = 1'b0;
+		shared = 1'b0;
+		seen_o = 1'b0;
+		bus_data_valid = 1'b0;
+		Current_MESI_state_snoop = cache[index_snoop][35:34];
+		message_i = NA;
 
-	logic [1:0] coherency_state_attending_cpu;
-	assign coherency_state_attending_cpu = cache[cache_index][35:34];//decomposing cache's line
-	logic [1:0] mem_tag;
-	assign mem_tag = cache[cache_index][33:32];
-	logic [31:0] data;
-	assign data = cache[cache_index][31:0];
-
-	logic write_hit, write_miss, read_hit, read_miss, bus_resquest_match, cpu_controler_write_back;
-
-	assign write_hit  = (write) & ( mem_tag == tag) & coherency_state_attending_cpu!=I;//for calculating the next block state
-	assign write_miss = (write) & ((mem_tag != tag) | coherency_state_attending_cpu==I);
-	assign read_hit   = (read ) & ( mem_tag == tag) & coherency_state_attending_cpu!=I;
-	assign read_miss  = (read ) & ((mem_tag != tag) | coherency_state_attending_cpu==I);
-
-	assign bus_resquest_match = (cache[cache_index_attending_bus][35:34]!=I) & (cache[cache_index_attending_bus][33:32]==cache_tag_attending_bus);
-	logic bus_controler_abort_mem_access;
-	logic [1:0] status_n_cpu,status_n_bus;//first is used in the block, the second is what our FSI MSI BUS calculated to attend bus a request
-	
-	assign data_out_cpu = read_hit ? data : (bus_data_found ? bus_data_delivery : mem_data_delivery);
-
-	assign cpu_write_back = cpu_controler_write_back;
-	assign bus_write_back = bus_controler_write_back;
-
-	assign address_out_mem_cpu = {cache[cache_index][33:32],cache_index};
-	assign address_out_mem_bus =  {cache[cache_index_attending_bus][33:32],cache_index_attending_bus};
-	assign data_out_mem_cpu = cache[cache_index][31:0];
-	assign data_out_mem_bus = cache[cache_index_attending_bus][31:0];
-
-	assign bus_reply_abort_mem_access = bus_resquest_match ? bus_controler_abort_mem_access : 1'b0;
-	assign bus_reply_data_found = cache[cache_index_attending_bus][31:0];//think as abort mem access data
-
-	assign ask_mem_address = mem_address;
-
-	initial begin		
-		#0
-		for(i=0;i<4;i=i+1) begin
-			cache[i]<=35'b0;
+		if ( bus_message_i != NA) begin
+			message_i = bus_message_i;
+			seen_o = 1'b1;
+			hit_snoop = cache[bus_addr_i[1:0]][33:32]==bus_addr_i[3:2];
+			if (hit_snoop) begin
+				{tag_snoop, index_snoop} = bus_addr_i;
+				if (tag_snoop == tag_proc && active) begin
+					shared = 1'b1;
+				end
+				
+				if( bus_message_i == bus_read_miss ) begin
+					bus_data_valid = (Current_MESI_state_snoop!=I);
+				end
+			end
 		end
 	end
 
-	cpu_rq_controller _CTRL_R_(
-		.status_q(coherency_state_attending_cpu),
-		.cpu_write_hit(write_hit),.cpu_read_hit(read_hit),
-		.cpu_write_miss(write_miss),.cpu_read_miss(read_miss),
-		.write_back_block_n(cpu_controler_write_back),//send to mem //<-outputs:
-		.status_n(status_n_cpu),//used in block
-		.bus_n(bus_reply)//writen on bus
-	);
-	bus_rq_controller _CTRL_B_(
-		.status__q(coherency_state_attending_bus),
-		.bus_write_miss(bus_requests==bus_write_miss), 
-		.bus_read_miss(bus_requests==bus_read_miss), 
-		.bus_invalidate(bus_requests==bus_invalidate),	
-		.abort_mem_access_n(bus_controler_abort_mem_access),//send to bus //<-outputs:
-		.write_back_block_n(bus_controler_write_back),//send to mem
-		.status_n(status_n_bus)//used on block
-	);
 
-	always@(posedge clk)begin
-		cache[cache_index][21:20] <= status_n_cpu;//update line state from cpu request
-		if (bus_resquest_match==1'b1)begin
-			cache[cache_index_attending_bus][21:20] <= status_n_bus;//update line state from bus request
+   
+	/**********************************************************************************
+						MESI mesi DIAGRAM IMPLEMENTATION - Processor
+	**********************************************************************************/
+	action cc(Current_MESI_state_proc, read_write, mem_rden_proc, Updated_MESI_state_proc); 
+
+
+	/*******************************************************************************
+                   MESI mesi DIAGRAM IMPLEMENTATION - Snoop
+	*******************************************************************************/
+	snoop sn(Current_MESI_state_snoop, message_i, mem_wren_snoop, Updated_MESI_state_snoop); //snooper
+
+	
+	logic [1:0] index;
+	//main body
+	always_comb begin 
+		//
+		mem_rden = mem_rden_proc && !bus_response_valid; // abort mem access if other proc has required data
+		//
+		mem_wren = ( ( read_write == write_miss || bus_message_i == bus_read_miss ) && ( cache[index_proc][35:34] == M ) ) ? 1'b1 : mem_wren_snoop;
+
+		Addr_rq = active ? AdrM_i : hit_snoop ? bus_addr_i : 4'b0;
+		data_o  = cache[index][31:0];
+	end
+	
+	//cache address-data update
+	always @(posedge clk) begin
+		if (active) begin
+			AdrM 				 <= AdrM_i;
+			index 				 <= AdrM_i[1:0];
+		end else begin
+			index 			     <= bus_addr_i[1:0];
 		end
-		if(write==1'b1)begin
-			cache[cache_index][31:0] <= write_data;
+
+		bus_response_valid_q   	 <= bus_response_valid;	
+		if (prior) begin
+			cache[index_proc][35:34] <= Updated_MESI_state_proc;
 		end
-		if (bus_data_found==1'b1 && read_miss == 1'b1)begin
-			cache[cache_index][31:0] <= bus_data_delivery;
-		    cache[cache_index][33:32] <= cache_tag_attending_bus;
-		end 
-		else if (bus_data_found==1'b0 && read_miss == 1'b1)begin
-			cache[cache_index][31:0] <= mem_data_delivery;
-            cache[cache_index][33:32] <= tag_bit;
+		
+		if ( !prior || index_snoop != index_proc ) begin
+			cache[index_snoop][35:34] <= Updated_MESI_state_snoop;
+		end		
+
+		if (WrM) begin
+			wd_q = WriteDataM;
+			wrAdr_q = AdrM_i[3:2];
+		end
+
+		
+		if (we_q) begin
+			cache[index_proc[1:0]][33:0] <= {wrAdr_q, wd_q};
+		end else if (bus_response_valid_q) begin
+			cache[index_proc[1:0]][33:0] <= {AdrM[3:2], bus_data_i};
+		end else if (mmvalid) begin
+			cache[index_proc[1:0]][33:0] <= {mmtag, mmdata};
 		end
 	end
+
+	always_ff @( negedge clk ) begin 
+		we_q <= WrM;
+	end
+	
 endmodule
