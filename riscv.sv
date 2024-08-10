@@ -1,11 +1,35 @@
 module riscv(   input   logic        clk, reset,
                 output  logic [31:0] PCF,
                 input   logic [31:0] InstrF,
-                output  logic        MemReadM, MemWriteM, PCstall,
-                output  logic [31:0] ALUResultM, WriteDataM,
-                input   logic [31:0] ReadDataM,
-                output  logic [31:0] dec
-					 );
+                
+
+                /***dmem interface***/
+                // Bus
+                input logic [1:0] bus_message_i, 
+                output logic [1:0] bus_message_o,
+
+                input logic seen_i,
+                output logic seen_o,
+
+                input logic bus_response_valid, // if the other cache says abort mem access 
+                input logic [31:0] bus_data_i,
+                input logic [3:0] bus_addr_i, // snoop communicate address 
+                output logic bus_data_valid, // announces to the other core we have the data needed
+
+                // Main memory
+                input logic mmvalid,
+                input logic [31:0] mmdata,
+                input logic [1:0] mmtag,
+
+                output logic mem_rden, mem_wren, 
+
+                // Address - data output
+                output logic [3:0] Addr_rq,
+                output  logic [31:0] ReadDataM
+
+				);
+
+    logic       PCstall;
     logic [6:0] opD;
     logic [2:0] funct3D;
     logic       funct7b5D;
@@ -18,10 +42,16 @@ module riscv(   input   logic        clk, reset,
     logic       RegWriteM;
     logic [1:0] ResultSrcW;
     logic       RegWriteW;
-
+    logic [31:0] dec;
     logic [1:0] ForwardAE, ForwardBE;
     logic       StallF, StallD, FlushD, FlushE;
     logic [4:0] Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW;
+    //dmem
+    logic        miss;
+    logic        MemReadM, MemWriteM;
+    logic [31:0] ALUResultM, WriteDataM;
+    
+
 
     controller c(clk, reset,
                 opD, funct3D, funct7b5D, ImmSrcD,
@@ -41,8 +71,42 @@ module riscv(   input   logic        clk, reset,
 					
 
     hazard hu(Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW,
-                PCSrcE, ResultSrcEb0, PCstall, RegWriteM, RegWriteW,
+                PCSrcE, ResultSrcEb0, PCstall, miss, RegWriteM, RegWriteW,
                 ForwardAE, ForwardBE, StallF, StallD, FlushD, FlushE);
+
+    dmem dm(
+
+            clk,
+            MemReadM, MemWriteM,
+            WriteDataM,
+            ALUResultM[3:0],
+
+            miss,
+
+            // Bus
+            bus_message_i, 
+            bus_message_o,
+
+            seen_i,
+            seen_o,
+
+            bus_response_valid, // if the other cache says abort mem access 
+            bus_data_i,
+            bus_addr_i, // snoop communicate address 
+            bus_data_valid, // announces to the other core we have the data needed
+
+            // Main memory
+            mmvalid,
+            mmdata,
+            mmtag,
+
+            mem_rden, 
+            mem_wren, 
+
+            // Address - data output
+            Addr_rq,
+            ReadDataM
+    );
 endmodule
 
 module controller(input logic clk, reset,
@@ -127,7 +191,7 @@ module maindec( input  logic [6:0] op,
             7'b0110111: controls = 14'b1_100_1_1_0_0_00_0_00_0; // lui
             7'b0000000: controls = 14'b0_000_0_0_0_0_00_0_00_0; // need valid values at reset
 
-            default:    controls = 1'bx_xxx_x_x_x_xx_x_xx_x; // non-implemented instruction
+            default:    controls = 14'bx_xxx_x_x_x_xx_x_xx_x; // non-implemented instruction
 
         endcase
 endmodule
@@ -264,8 +328,8 @@ endmodule
 // Hazard Unit: forward, stall, and flush
 module hazard(input logic [4:0] Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW,
             input logic PCSrcE, ResultSrcEb0,
-            input logic PCstall,
-            input logic RegWriteM, RegWriteW,
+            input logic PCstall, miss,
+            input logic RegWriteM, RegWriteW, 
             output logic [1:0] ForwardAE, ForwardBE,
             output logic StallF, StallD, FlushD, FlushE);
     logic lwStallD;
@@ -282,7 +346,7 @@ module hazard(input logic [4:0] Rs1D, Rs2D, Rs1E, Rs2E, RdE, RdM, RdW,
             else if ((Rs2E == RdW) & RegWriteW) ForwardBE = 2'b01;
     end
     // stalls and flushes
-    assign lwStallD = ResultSrcEb0 & ((Rs1D == RdE) | (Rs2D == RdE)) ;
+    assign lwStallD = ResultSrcEb0 & ((Rs1D == RdE) | (Rs2D == RdE)) | miss ;
     assign StallF = lwStallD | PCstall;
     assign StallD = lwStallD;
     assign FlushD = PCSrcE;
