@@ -1,21 +1,22 @@
 module mmemory(
-    input clk,
-	input [3:0] address_read1,address_read2,
-	input write1, write2, write3, write4,
-	input [3:0] address_write1,address_write2,address_write3,address_write4, 
-	input [31:0] data_write1, data_write2,data_write3, data_write4,
+    input logic clk,
+	input logic [3:0] address_1,address_2,
+	input logic read1, read2,
+	input logic write1, write2, 
+	input logic [31:0] data_write1, data_write2,
 	
-	output [1:0] tag_bit1, tag_bit2,
-	output [31:0] readed1,readed2	
+	output logic mmvalid1, mmvalid2,
+	output logic [1:0] tag_bit1, tag_bit2,
+	output logic [31:0] readed1, readed2	
 );
-	integer i,j;
-	reg [31:0] mem [15:0];
-	assign readed1 = mem[address_read1];
-	assign tag_bit1 = address_read1[3:2];
-	assign readed2 = mem[address_read2];
-	assign tag_bit2 = address_read2[3:2];
+	logic valid1, valid2;
+	assign valid1 = read1 && (address_1 <= 4'b1111);
+	assign valid2 = read2 && (address_2 <= 4'b1111);
+
+	integer i;
+	logic [31:0] mem [15:0];
 	initial begin
-		#0
+		#0	
 		for(i=0;i<16;i=i+1)begin
 			mem[i] <= 32'b0;
 		end
@@ -26,13 +27,19 @@ module mmemory(
 		mem[15] <= 4'b1111;
 	end
 	always@(posedge clk)begin
+		mmvalid1 <= valid1;
+		mmvalid2 <= valid2;
+		if(mmvalid1) begin
+	  		readed1 = mem[address_1];
+			tag_bit1 = address_1[3:2];
+		end
+		if(mmvalid2) begin
+			readed2 = mem[address_2];
+			tag_bit2 = address_2[3:2];
+		end
 		if(write1)
-			mem[address_write1] <= data_write1;
+			mem[address_1] <= data_write1;
 		if(write2)
-			mem[address_write2] <= data_write2;
-		if(write3)
-			mem[address_write3] <= data_write3;
-		if(write4)
-			mem[address_write4] <= data_write4;
+			mem[address_2] <= data_write2;
 	end
 endmodule
